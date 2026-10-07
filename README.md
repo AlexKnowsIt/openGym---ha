@@ -177,6 +177,17 @@ variable. The [self-hosting guide](docs/SELF_HOSTING.md) covers every option in 
 
 </details>
 
+## Home Assistant add-on
+
+openGym runs as a Home Assistant add-on with ingress — it opens from the sidebar, and each
+Home Assistant user is signed in to their own profile automatically.
+
+1. Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
+   `https://github.com/AlexKnowsIt/openGym---ha`
+2. Install **openGym**, start it, enable "Show in sidebar".
+
+Details: [opengym/DOCS.md](opengym/DOCS.md).
+
 ## Phone app
 
 The same codebase builds a standalone app with Capacitor: no account, no server, everything stays

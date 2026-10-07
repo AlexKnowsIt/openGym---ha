@@ -564,6 +564,10 @@ function cookieToken(req) {
 // The session behind a request: { user, exp, bearer } — `bearer` when it came in an Authorization
 // header (a paired phone) rather than the cookie — or null for no valid session at all.
 function sessionOf(req) {
+  if (HA_INGRESS) {
+    const user = ingressUser(req);
+    if (user && !user.disabled) return { user, exp: Infinity, bearer: false };
+  }
   // The paired mobile app has no cookie jar shared with the API's origin, so it carries the same
   // signed token in an Authorization header instead — same payload, same verification below.
   const auth = req.headers.authorization || '';
@@ -585,6 +589,27 @@ function sessionOf(req) {
 }
 function readSession(req) {
   return sessionOf(req)?.user || null;
+}
+// Home Assistant add-on (opengym/): the Supervisor's ingress proxy has already signed the person
+// in to Home Assistant and names them in X-Remote-User-*. Believed only with HA_INGRESS on, which
+// the add-on sets and where nothing but that proxy can reach the API (nginx allows only the
+// Supervisor, the API listens on 127.0.0.1). Each Home Assistant user gets their own profile.
+const HA_INGRESS = /^(1|true|yes|on)$/i.test(process.env.HA_INGRESS || '');
+// Node reads header bytes as latin1; Home Assistant sends display names as UTF-8.
+const utf8Header = v => Buffer.from(String(v || ''), 'latin1').toString('utf8');
+function ingressUser(req) {
+  const hid = String(req.headers['x-remote-user-id'] || '');
+  if (!/^[0-9a-f]{32}$/i.test(hid)) return null;
+  const id = 'ha-' + hid.toLowerCase();
+  let user = db.users.find(u => u.id === id);
+  if (user) return user;
+  const name = (utf8Header(req.headers['x-remote-user-display-name']) || utf8Header(req.headers['x-remote-user-name']) || 'Home Assistant').trim().slice(0, 40);
+  user = { id, name, created: new Date().toISOString() };
+  claimFirstAdmin(req, user);
+  db.users.push(user);
+  saveDb();
+  audit(req, 'auth.ha-ingress.new', { user });
+  return user;
 }
 // Guard for /api/admin/* — resolves the caller and 401/403s if they aren't an admin.
 function requireAdmin(req, res) {
@@ -2621,4 +2646,5 @@ server.headersTimeout = 60000;
 // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose it
 // (the tests spawn the server that way, and so does anyone running two instances on one box) has
 // no other way to learn it.
-server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+// HOST unset listens on every interface, as before; the Home Assistant add-on sets 127.0.0.1.
+server.listen(PORT, process.env.HOST || undefined, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
