@@ -3,6 +3,7 @@ version: "1.3.10"
 slug: opengym
 description: Self-hosted gym & body-weight tracker — routines, workouts, progression, 1RM.
 url: https://github.com/AlexKnowsIt/openGym---ha
+image: ghcr.io/alexknowsit/{arch}-opengym-ha
 arch:
   - aarch64
   - amd64

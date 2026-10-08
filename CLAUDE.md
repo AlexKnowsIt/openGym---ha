@@ -140,3 +140,7 @@ output), `api`, `web` (multi-stage build of `frontend/` served by nginx, which a
 - Don't commit `media/` or `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.
+
+## This fork
+
+This repository is the Home Assistant add-on fork. Read @AGENTS.md before changing anything.
