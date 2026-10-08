@@ -67,6 +67,13 @@ as user `ha-<id>` (created on first sight, named after `X-Remote-User-Display-Na
 
 A push to `main` touching `api/`, `frontend/` or `opengym/` builds and releases too.
 
+### Ruleset on `main`
+
+`main` requires the checks "openGym test suites" and "Add-on image" (Settings → Rules →
+Rulesets), with "Repository admin" as bypass. The workflow's own pushes to `main` (promote,
+release) have no checks attached and go through only with the `SYNC_TOKEN` secret, a token of
+the repository owner. Without it they are refused and Home Assistant gets no update.
+
 ### When the sync fails
 
 - **Merge conflict**: check out `main`, merge the tag by hand
