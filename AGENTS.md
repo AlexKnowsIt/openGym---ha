@@ -14,7 +14,10 @@ future merge conflict, so:
   `api/test/server-ha-ingress.test.js`).
 - Never reformat, rename or "clean up" upstream code. Change upstream files only when the add-on
   cannot work otherwise, and keep that change as small as possible.
-- Never delete upstream files, including workflows (disable them in the Actions UI instead).
+- Never delete upstream files, including workflows. Upstream workflows that make no sense here
+  (`mirror.yml`, `docker-publish.yml`, `pages.yml`) are disabled by the `inherited-workflows` job
+  in `ha-addon.yml`; add a new one to its list if an upstream release brings another.
+  `test.yml` stays enabled.
 
 ## What the fork changes in upstream files
 

@@ -26,6 +26,7 @@ on:
     paths: ['api/**', 'frontend/**', 'opengym/**', '!opengym/config.yaml', '!opengym/DOCS.md', '!opengym/test/**']
 
 permissions:
+  actions: write     # inherited-workflows below
   contents: write
   packages: write
 
@@ -37,6 +38,22 @@ env:
   UPSTREAM: https://github.com/DuarteSantos8/openGym
 
 jobs:
+  # Upstream's workflows come along with every merge. These three only make sense in upstream's
+  # repository (GitLab mirror, its Docker images, its GitHub Pages site) and fail or publish
+  # needlessly here. Disabled, not deleted: a deleted file would conflict with every upstream
+  # change to it. Runs every time, so a re-enabled one is switched off again. tests.yml stays on.
+  inherited-workflows:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          for wf in mirror.yml docker-publish.yml pages.yml; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state 2>/dev/null || echo missing)
+            echo "$wf: $state"
+            if [ "$state" = active ]; then gh workflow disable "$wf" --repo "$GITHUB_REPOSITORY"; fi
+          done
+
   sync:
     runs-on: ubuntu-latest
     outputs:
