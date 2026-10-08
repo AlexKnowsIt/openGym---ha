@@ -1,0 +1,79 @@
+name: Home Assistant add-on tests
+
+# Runs on every pull request, and from ha-addon.yml on each upstream release before it is merged
+# into main. Upstream's own tests.yml covers more (MCP, locales, API images); this file is what
+# has to pass for the add-on: openGym's frontend and API suites (the API one includes the
+# ingress sign-in test), the add-on manifest, both images, and the add-on running as under
+# Home Assistant, in a browser behind an ingress stand-in.
+
+on:
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'website/**', 'kubernetes/**']
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to test
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-addon-test-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suites:
+    name: openGym test suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || '' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: API
+        working-directory: api
+        run: npm ci --omit=optional && npm test
+      - name: Frontend
+        working-directory: frontend
+        run: npm ci --ignore-scripts && npm test
+
+  addon:
+    name: Add-on image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || '' }}
+      - name: Manifest consistent with nginx, run.sh and the build matrix
+        run: python3 opengym/test/check-config.py
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: opengym/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: opengym-ha:test
+      - name: Build aarch64 (not run, only built)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: opengym/Dockerfile
+          platforms: linux/arm64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Playwright
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          echo "PLAYWRIGHT=$RUNNER_TEMP/pw/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Runs like under Home Assistant (ingress, users, sync, update, browser)
+        run: E2E=1 opengym/test/smoke.sh opengym-ha:test

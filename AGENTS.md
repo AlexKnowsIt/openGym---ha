@@ -10,7 +10,8 @@ Upstream releases are merged in automatically. Every line changed in an upstream
 future merge conflict, so:
 
 - Put fork-only things in fork-only files (`opengym/`, `repository.yaml`, `AGENTS.md`,
-  `.github/workflows/ha-addon.yml`, `api/test/server-ha-ingress.test.js`).
+  `.github/workflows/ha-addon.yml`, `.github/workflows/ha-addon-test.yml`,
+  `api/test/server-ha-ingress.test.js`).
 - Never reformat, rename or "clean up" upstream code. Change upstream files only when the add-on
   cannot work otherwise, and keep that change as small as possible.
 - Never delete upstream files, including workflows (disable them in the Actions UI instead).
@@ -53,10 +54,12 @@ as user `ha-<id>` (created on first sight, named after `X-Remote-User-Display-Na
 
 ## Updates (`.github/workflows/ha-addon.yml`)
 
-1. **sync** — daily (and on "Run workflow"): merges the newest upstream `vX.Y.Z` tag into
-   `main`, runs `cd api && npm test`, pushes.
-2. **build** — builds `amd64` and `aarch64` images, tags `<openGym version>.<run number>`.
-3. **release** — writes that version into `opengym/config.yaml`; Home Assistant then offers the
+1. **sync** — daily (and on "Run workflow"): merges the newest upstream `vX.Y.Z` tag onto
+   `main` and pushes the result to the `ha-sync` branch only.
+2. **test** — `ha-addon-test.yml` on that merge, the same checks every pull request gets.
+3. **promote** — only if all of them pass: fast-forwards `main` to the tested merge.
+4. **build** — builds `amd64` and `aarch64` images, tags `<openGym version>.<run number>`.
+5. **release** — writes that version into `opengym/config.yaml`; Home Assistant then offers the
    update.
 
 A push to `main` touching `api/`, `frontend/` or `opengym/` builds and releases too.
@@ -73,14 +76,29 @@ A push to `main` touching `api/`, `frontend/` or `opengym/` builds and releases 
   workflow files. Add a fine-grained token with Contents + Workflows write as the `SYNC_TOKEN`
   repository secret, or merge by hand.
 
-## Checks before pushing
+## Tests (`.github/workflows/ha-addon-test.yml`)
+
+Run on every pull request and gate every upstream merge. Run them locally before pushing:
 
 ```bash
-cd api && npm test                 # includes server-ha-ingress.test.js
-cd frontend && npm test            # if frontend code was touched
-docker build -f opengym/Dockerfile .   # if opengym/ or the build changed
+cd api && npm test                       # incl. server-ha-ingress.test.js
+cd frontend && npm test
+python3 opengym/test/check-config.py     # manifest vs. nginx.conf, run.sh, build matrix
+docker build -f opengym/Dockerfile -t opengym-ha:test .
+E2E=1 PLAYWRIGHT=<path to playwright/index.mjs> opengym/test/smoke.sh opengym-ha:test
 ```
 
-To try the image: run it with a `/data/options.json` (`{"allow_guest":false,"default_lang":""}`)
-mounted at `/data`, and send requests from 172.30.32.2 with an
-`X-Remote-User-Id: <32 hex>` header (e.g. a docker network `172.30.32.0/23`).
+| Test | Catches |
+|------|---------|
+| `api/test/server-ha-ingress.test.js` | Ingress sign-in broken by an upstream change to sessions/users; headers trusted without `HA_INGRESS`. |
+| `opengym/test/check-config.py` | Ingress port ≠ nginx port, nginx open to other containers, framing forbidden, option not read by `run.sh`, arch offered but not built. |
+| `opengym/test/smoke.sh` + `smoke.mjs` | The real image as under Home Assistant (network 172.30.32.0/23): app served with relative assets and no `X-Frame-Options`, options reach the API, one profile per HA user with UTF-8 names, first is admin, sync round trip, 2 MB sync not refused, cross-site write refused, other containers get 403 and cannot reach the API port, profile and data survive replacing the container. |
+| `opengym/test/ingress-e2e.mjs` (`E2E=1`) | Chromium loads the app in an iframe behind a prefix-stripping ingress stand-in: signed in without a login screen, every API call stays under the ingress prefix, no page errors. |
+| aarch64 image build | ARM images that fail to build. |
+
+When a test fails, fix the code, not the test — unless upstream deliberately changed the
+behavior the test pins down.
+
+Pitfall: the frontend's `src/lib/audit.test.js` requires a label for every audit event and
+reason the server emits. The ingress sign-in therefore records the existing
+`auth.register.ok` event; do not invent new events or `msg` values in fork code.

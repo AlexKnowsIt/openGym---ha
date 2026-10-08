@@ -608,7 +608,7 @@ function ingressUser(req) {
   claimFirstAdmin(req, user);
   db.users.push(user);
   saveDb();
-  audit(req, 'auth.ha-ingress.new', { user });
+  audit(req, 'auth.register.ok', { user });
   return user;
 }
 // Guard for /api/admin/* — resolves the caller and 401/403s if they aren't an admin.
