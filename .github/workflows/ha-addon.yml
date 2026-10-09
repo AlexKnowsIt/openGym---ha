@@ -1,0 +1,178 @@
+name: Home Assistant add-on
+
+# Keeps the add-on current without anything being built on the Home Assistant device:
+#
+#   sync    (daily, or by hand) merges the newest upstream openGym release (vX.Y.Z tag of
+#           DuarteSantos8/openGym) onto main and pushes the result to the ha-sync branch only.
+#           A conflict fails the run; AGENTS.md says how to resolve it.
+#   test    ha-addon-test.yml on that merge — the same checks a pull request gets.
+#   promote only when they pass, fast-forwards main to the tested merge.
+#   build   builds opengym/Dockerfile for each arch and pushes ghcr.io/<owner>/<arch>-opengym-ha.
+#   release only after every image is pushed, writes the new version into opengym/config.yaml.
+#           That commit is what makes Home Assistant offer the update, so it never offers a
+#           version whose image does not exist yet.
+#
+# Version: <openGym version>.<run number>, e.g. 1.3.10.7 — newer on every build.
+# Pushes made with GITHUB_TOKEN start no workflows, so neither the merge nor the version commit
+# triggers this file again. An upstream release that changes .github/workflows/ can only be pushed
+# with a token that has the `workflow` scope: store one as the SYNC_TOKEN secret. With a ruleset
+# requiring status checks on main, promote and release push commits that carry no checks of their
+# own; SYNC_TOKEN (the owner's, with "Repository admin" on the ruleset's bypass list) lets them.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['api/**', 'frontend/**', 'opengym/**', '!opengym/config.yaml', '!opengym/DOCS.md', '!opengym/test/**']
+
+permissions:
+  actions: write     # inherited-workflows below
+  contents: write
+  packages: write
+
+concurrency:
+  group: ha-addon
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/DuarteSantos8/openGym
+
+jobs:
+  # Upstream's workflows come along with every merge. These three only make sense in upstream's
+  # repository (GitLab mirror, its Docker images, its GitHub Pages site) and fail or publish
+  # needlessly here. Disabled, not deleted: a deleted file would conflict with every upstream
+  # change to it. Runs every time, so a re-enabled one is switched off again. tests.yml stays on.
+  inherited-workflows:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          for wf in mirror.yml docker-publish.yml pages.yml; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state 2>/dev/null || echo missing)
+            echo "$wf: $state"
+            if [ "$state" = active ]; then gh workflow disable "$wf" --repo "$GITHUB_REPOSITORY"; fi
+          done
+
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      sha: ${{ steps.merge.outputs.sha }}
+      version: ${{ steps.merge.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      - id: merge
+        name: Merge the newest upstream release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          changed=false
+          if [ "${{ github.event_name }}" != push ]; then
+            tag=$(git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's#.*refs/tags/##' \
+                  | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+            echo "newest upstream release: $tag"
+            git fetch --no-tags "$UPSTREAM" "refs/tags/$tag:refs/tags/upstream-$tag"
+            if ! git merge-base --is-ancestor "upstream-$tag" HEAD; then
+              git merge --no-edit -m "Merge upstream openGym $tag" "upstream-$tag"
+              changed=true
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./frontend/package.json').version").${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      # Not main yet: the merge is only a candidate until the tests below have passed on it.
+      - if: steps.merge.outputs.changed == 'true'
+        run: git push --force origin HEAD:refs/heads/ha-sync
+
+  test:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    uses: ./.github/workflows/ha-addon-test.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
+
+  promote:
+    needs: [sync, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      # Fast-forward only: if main moved while the tests ran, this fails rather than publish a
+      # combination nobody tested; the next run merges again on top of the new main.
+      - run: |
+          git fetch origin ha-sync
+          git merge --ff-only ${{ needs.sync.outputs.sha }}
+          git push origin HEAD:main
+
+  build:
+    needs: [sync, promote]
+    # Upstream merge: only once promoted. Otherwise a manual run or a push to main. A merge pushed
+    # with SYNC_TOKEN starts a push run of its own; the run that merged builds it.
+    if: >-
+      !cancelled() && needs.sync.result == 'success' && (
+        (needs.sync.outputs.changed == 'true' && needs.promote.result == 'success') ||
+        (needs.sync.outputs.changed != 'true' && (github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Merge upstream openGym')))))
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+      - id: meta
+        run: |
+          echo "image=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/${{ matrix.arch }}-opengym-ha" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: opengym/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            BUILD_VERSION=${{ needs.sync.outputs.version }}
+            BUILD_ARCH=${{ matrix.arch }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ needs.sync.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+
+  release:
+    needs: [sync, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      - name: Publish the new version to Home Assistant
+        run: |
+          version='${{ needs.sync.outputs.version }}'
+          sed -i "s/^version: .*/version: \"$version\"/" opengym/config.yaml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "Home Assistant add-on $version"
+          git pull --rebase origin main
+          git push origin HEAD:main
